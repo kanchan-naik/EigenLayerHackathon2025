@@ -1,0 +1,201 @@
+# backtest_functions.py
+
+from math import sqrt
+from market_data_objects import V3PoolState, TradeData
+from position_objects import V3Position, LPPositionState
+
+def simulate_single_v3_lp_position(
+    trades: list,
+    initial_block: int,
+    end_block: int,
+    pool_state: V3PoolState,
+    lower_tick: int,
+    upper_tick: int,
+    token0_amount: float,
+    token1_amount: float,
+    gas_price_data: dict,
+    fee_on: bool = True
+):
+    """
+    Simulate how a single Uniswap V3 LP position evolves from `initial_block` to `end_block`.
+    Returns a dict with final token amounts, total gas spent, etc.
+
+    trades: a list of TradeData objects, sorted by block_number ascending.
+    """
+
+    # Create the user’s V3 position
+    user_position = V3Position(lower_tick, upper_tick)
+    # Create a tracker for overall position state
+    lp_state = LPPositionState(token0_amount, token1_amount)
+
+    # 1) Mint liquidity at the initial block
+    minted_liquidity, used0, used1 = add_liquidity_v3(
+        pool_state,
+        user_position,
+        amount0_desired=token0_amount,
+        amount1_desired=token1_amount
+    )
+
+    # Pay gas for the mint
+    lp_state.total_gas_spent += get_v3_gas_cost_for_tx(
+        block_number=initial_block,
+        gas_price_data=gas_price_data,
+        tx_type="mint"
+    )
+
+    # 2) Process trades from initial_block to end_block #NOTE: This trade-by-trade loop is probably good but inefficient
+    for trade in trades:
+        if trade.block_number < initial_block:
+            continue
+        if trade.block_number > end_block:
+            break
+
+        # Update the pool state with this trade
+        process_swap_v3(pool_state, trade)
+
+        # Update the user's accrued fees if their position is in range
+        update_position_fees_v3(pool_state, user_position)
+
+        # TODO (BIG) rebalancing logic, do it here:
+        # e.g., if price leaves the user's range, remove liquidity or change ticks, etc.
+
+    # 3) Burn (remove) all remaining liquidity at end_block
+    token0_out, token1_out = remove_liquidity_v3(pool_state, user_position, user_position.liquidity)
+
+    lp_state.total_gas_spent += get_v3_gas_cost_for_tx(
+        block_number=end_block,
+        gas_price_data=gas_price_data,
+        tx_type="burn"
+    )
+
+    # 4) Collect any outstanding fees
+    fee0, fee1 = collect_fees_v3(pool_state, user_position)
+    token0_out += fee0
+    token1_out += fee1
+
+    results = {
+        "final_token0": token0_out,
+        "final_token1": token1_out,
+        "gas_spent": lp_state.total_gas_spent,
+        "initial_token0": lp_state.initial_token0,
+        "initial_token1": lp_state.initial_token1
+    }
+    return results
+
+
+# -----------------------------------------------------------------
+# Below are placeholder functions for actual V3 logic
+# -----------------------------------------------------------------
+
+def add_liquidity_v3(pool_state: V3PoolState,
+                     position: V3Position,
+                     amount0_desired: float,
+                     amount1_desired: float):
+    """
+    Mint liquidity for the user in [position.lower_tick, position.upper_tick].
+    Return (liquidity_minted, usedToken0, usedToken1).
+    This is a placeholder. Real logic must compute how much liquidity can be minted
+    given the price range, the current sqrtP, etc.
+    """
+    # PSEUDO EXAMPLE:
+    liquidity_minted = 1_000.0  # pretend
+    used_token0 = amount0_desired
+    used_token1 = amount1_desired
+
+    # Update the position
+    position.liquidity += liquidity_minted
+
+    # If in range, update global pool liquidity
+    if position.is_in_range(pool_state.current_tick):
+        pool_state.liquidity += liquidity_minted
+
+    return liquidity_minted, used_token0, used_token1
+
+def remove_liquidity_v3(pool_state: V3PoolState,
+                        position: V3Position,
+                        liquidity_to_burn: float):
+    """
+    Burn liquidity from the user’s position.
+    Return (amount0, amount1) that the user receives from burning.
+    """
+    if position.liquidity == 0:
+        return 0.0, 0.0
+
+    fraction = liquidity_to_burn / position.liquidity if position.liquidity > 0 else 0
+    # For demonstration, pretend we get 500:500 from full position
+    amount0 = 500.0 * fraction
+    amount1 = 500.0 * fraction
+
+    # Reduce position's liquidity
+    position.liquidity -= liquidity_to_burn
+    if position.is_in_range(pool_state.current_tick):
+        pool_state.liquidity -= liquidity_to_burn
+
+    return amount0, amount1
+
+def collect_fees_v3(pool_state: V3PoolState, position: V3Position):
+    """
+    In V3, collecting fees is typically a separate tx. 
+    We'll just simulate that the user's owed fees are returned immediately.
+    """
+    fee0 = position.tokens_owed0
+    fee1 = position.tokens_owed1
+
+    position.tokens_owed0 = 0.0
+    position.tokens_owed1 = 0.0
+
+    return fee0, fee1
+
+def update_position_fees_v3(pool_state: V3PoolState, position: V3Position):
+    """
+    Update the user's position to account for newly accrued fees since last update.
+    This involves checking how global fee growth changed, then attributing a share
+    to the position. Real code must handle the "inside range" fee growth logic properly.
+    """
+    # PSEUDO EXAMPLE:
+    # Suppose the position is in range, so we attribute some trivial new fees
+    if position.is_in_range(pool_state.current_tick):
+        newly_accrued0 = 1.0  # pretend
+        newly_accrued1 = 1.0  # pretend
+        position.tokens_owed0 += newly_accrued0
+        position.tokens_owed1 += newly_accrued1
+
+def process_swap_v3(pool_state: V3PoolState, trade: TradeData):
+    """
+    Process a single trade in V3.
+    We'll just directly set the new sqrt_price, liquidity, and tick
+    from the trade, and compute fees from the trade volume.
+    """
+    pool_state.sqrt_price = trade.sqrt_price_after
+    pool_state.current_tick = trade.tick_after
+    pool_state.liquidity = trade.liquidity_after
+
+    # Compute fees from the trade volume
+    volume0 = trade.amount0_in + trade.amount0_out
+    volume1 = trade.amount1_in + trade.amount1_out
+    fee0 = volume0 * pool_state.fee_tier
+    fee1 = volume1 * pool_state.fee_tier
+
+    # If there's liquidity, distribute that to fee growth
+    if pool_state.liquidity > 0:
+        pool_state.fee_growth_global0 += (fee0 / pool_state.liquidity)
+        pool_state.fee_growth_global1 += (fee1 / pool_state.liquidity)
+
+def get_v3_gas_cost_for_tx(block_number: int, gas_price_data: dict, tx_type: str = "swap"):
+    """
+    Returns the gas cost in ETH (or possibly USD if you do a conversion) for a Uniswap V3 tx.
+    This is a placeholder. Real code uses actual measured gas usage.
+    """
+    gas_used_map = {
+        "mint": 200_000,
+        "burn": 150_000,
+        "swap": 130_000,
+        "collect": 60_000
+    }
+    gas_used = gas_used_map.get(tx_type, 130_000)
+
+    gas_price_gwei = gas_price_data.get(block_number, 30)  # default 30 gwei if missing
+    gas_price_eth = gas_price_gwei * 1e-9  # convert gwei -> ETH
+
+    tx_cost_in_eth = gas_used * gas_price_eth
+    return tx_cost_in_eth
