@@ -124,7 +124,7 @@ def remove_liquidity_v3(pool_state: V3PoolState,
     fraction = liquidity_to_burn / position.liquidity if position.liquidity > 0 else 0
     # For demonstration, pretend we get 500:500 from full position
     amount0 = 500.0 * fraction
-    amount1 = 500.0 * fraction
+    amount1 = 500.0 * fraction #TODO: Make this adjustable
 
     # Reduce position's liquidity
     position.liquidity -= liquidity_to_burn
@@ -136,7 +136,7 @@ def remove_liquidity_v3(pool_state: V3PoolState,
 def collect_fees_v3(pool_state: V3PoolState, position: V3Position):
     """
     In V3, collecting fees is typically a separate tx. 
-    We'll just simulate that the user's owed fees are returned immediately.
+    We'll just simulate that the user's owed fees are returned immediately. TODO: Fix this.
     """
     fee0 = position.tokens_owed0
     fee1 = position.tokens_owed1
